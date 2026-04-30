@@ -8,13 +8,13 @@ from typing import Optional
 from dotenv import load_dotenv
 import asyncio
 import google.generativeai as genai
-from fastapi import FastAPI, HTTPException, Query, UploadFile, File, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from database import init_db, db, row_to_dict
-from analyzer import analyze_image_async, upsert_bill
+from analyzer import analyze_image_async, upsert_bill, analyze_line_items_async, upsert_line_items
 
 load_dotenv()
 
@@ -187,7 +187,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
 
 
-def background_analyze(filenames: list[str]):
+def background_analyze(filenames: list[str], extract_line_items: bool = False):
     """Run Gemini analysis on uploaded files in a background thread."""
     if not GEMINI_API_KEY:
         print("WARNING: GEMINI_API_KEY not set. Skipping background analysis.")
@@ -204,6 +204,8 @@ def background_analyze(filenames: list[str]):
             img_path = images_dir / filename
             if not img_path.exists():
                 continue
+
+            # Main bill analysis
             try:
                 analysis = loop.run_until_complete(
                     analyze_image_async(str(img_path), model)
@@ -222,6 +224,20 @@ def background_analyze(filenames: list[str]):
                     "analysis_status": "failed",
                 }
             upsert_bill(filename, str(img_path), analysis)
+
+            # Optional line items extraction
+            if extract_line_items:
+                try:
+                    li_result = loop.run_until_complete(
+                        analyze_line_items_async(str(img_path), model)
+                    )
+                except Exception as e:
+                    li_result = {
+                        "line_items": [],
+                        "extraction_status": "failed",
+                        "failure_reason": str(e),
+                    }
+                upsert_line_items(filename, li_result)
     finally:
         loop.close()
 
@@ -230,6 +246,7 @@ def background_analyze(filenames: list[str]):
 async def upload_receipts(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
+    extract_line_items: bool = Form(False),
 ):
     """Upload receipt images and queue them for async analysis."""
     images_dir = Path(IMAGES_DIR)
@@ -254,20 +271,65 @@ async def upload_receipts(
         with open(dest, "wb") as f:
             f.write(content)
 
+        li_status = "pending" if extract_line_items else "not_requested"
         with db() as conn:
             conn.execute(
                 """
-                INSERT OR IGNORE INTO bills (filename, image_path, analysis_status)
-                VALUES (?, ?, 'pending')
+                INSERT OR IGNORE INTO bills (filename, image_path, analysis_status, line_items_status)
+                VALUES (?, ?, 'pending', ?)
                 """,
-                (safe_name, str(dest)),
+                (safe_name, str(dest), li_status),
             )
         saved.append(safe_name)
 
     if saved:
-        background_tasks.add_task(background_analyze, saved)
+        background_tasks.add_task(background_analyze, saved, extract_line_items)
 
     return {"uploaded": len(saved), "files": saved}
+
+
+@app.post("/api/bills/{bill_id}/extract-line-items")
+def extract_line_items_endpoint(bill_id: int):
+    """Synchronously extract line items for an existing bill."""
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
+
+    with db() as conn:
+        row = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Bill not found")
+
+    filename = row["filename"]
+    image_path = row["image_path"]
+
+    # Set pending status
+    with db() as conn:
+        conn.execute(
+            "UPDATE bills SET line_items_status = 'pending' WHERE id = ?",
+            (bill_id,),
+        )
+
+    genai.configure(api_key=GEMINI_API_KEY)
+    model = genai.GenerativeModel(GEMINI_MODEL)
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        li_result = loop.run_until_complete(analyze_line_items_async(image_path, model))
+        upsert_line_items(filename, li_result)
+    except Exception as e:
+        upsert_line_items(filename, {
+            "line_items": [],
+            "extraction_status": "failed",
+            "failure_reason": str(e),
+        })
+    finally:
+        loop.close()
+
+    # Return updated bill
+    with db() as conn:
+        updated = conn.execute("SELECT * FROM bills WHERE id = ?", (bill_id,)).fetchone()
+        return row_to_dict(updated)
 
 
 @app.get("/api/stats")

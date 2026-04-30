@@ -1,5 +1,13 @@
 export type Category = "food" | "fuel" | "parking" | "others";
 export type AnalysisStatus = "pending" | "success" | "failed";
+export type LineItemsStatus = "not_requested" | "pending" | "success" | "failed";
+
+export interface LineItem {
+  name: string;
+  quantity: number | null;
+  unit_price: number | null;
+  total_price: number | null;
+}
 
 export interface Bill {
   id: number;
@@ -14,6 +22,8 @@ export interface Bill {
   notes: string | null;
   analysis_status: AnalysisStatus;
   raw_analysis: string | null;
+  line_items: string | null;
+  line_items_status: LineItemsStatus | null;
   created_at: string;
   updated_at: string;
 }

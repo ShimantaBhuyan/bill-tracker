@@ -25,6 +25,13 @@ def db():
         conn.close()
 
 
+def _add_column_if_missing(conn, column_name, column_def):
+    try:
+        conn.execute(f"ALTER TABLE bills ADD COLUMN {column_name} {column_def}")
+    except sqlite3.OperationalError:
+        pass
+
+
 def init_db():
     with db() as conn:
         conn.execute("""
@@ -41,6 +48,8 @@ def init_db():
                 notes TEXT,
                 analysis_status TEXT DEFAULT 'pending',
                 raw_analysis TEXT,
+                line_items TEXT,
+                line_items_status TEXT DEFAULT 'not_requested',
                 created_at TEXT DEFAULT (datetime('now')),
                 updated_at TEXT DEFAULT (datetime('now'))
             )
@@ -51,6 +60,10 @@ def init_db():
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_bills_status ON bills(analysis_status)
         """)
+
+        # Migrate existing databases that were created before these columns
+        _add_column_if_missing(conn, "line_items", "TEXT")
+        _add_column_if_missing(conn, "line_items_status", "TEXT DEFAULT 'not_requested'")
 
 
 def row_to_dict(row: sqlite3.Row) -> dict:

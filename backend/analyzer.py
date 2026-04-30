@@ -55,6 +55,28 @@ Return ONLY the raw JSON object, no markdown, no code fences, no explanation.
 If the image is completely unreadable or blank, set image_quality to "poor" and explain in quality_note.
 """
 
+LINE_ITEMS_PROMPT = """
+Extract all line items from this bill or invoice image carefully.
+Return a JSON object with exactly these fields:
+
+{
+  "line_items": [
+    {
+      "name": "<item name or description>",
+      "quantity": <number or null if unclear>,
+      "unit_price": <price per unit as number or null>,
+      "total_price": <total price for this line as number or null>
+    }
+  ],
+  "extraction_status": "success" or "failed",
+  "failure_reason": "<reason if failed, else null>"
+}
+
+If the image is unclear, blurry, too dark, partially visible, or line items cannot be read, set extraction_status to "failed" and provide a concise failure_reason.
+If there are no clear line items (e.g., a simple receipt with just a total and no itemized list), set extraction_status to "failed" and failure_reason to "No itemized line items found on this receipt."
+Return ONLY the raw JSON object, no markdown, no code fences, no explanation.
+"""
+
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 
@@ -101,6 +123,41 @@ async def analyze_image_async(image_path: str, model) -> dict:
             "quality_note": f"Analysis error: {str(e)}",
             "raw_analysis": None,
             "analysis_status": "failed",
+        }
+
+
+async def analyze_line_items_async(image_path: str, model) -> dict:
+    """Extract line items from a single image asynchronously."""
+    try:
+        img = Image.open(image_path)
+        response = await model.generate_content_async([LINE_ITEMS_PROMPT, img])
+        raw_text = response.text.strip()
+
+        if raw_text.startswith("```"):
+            lines = raw_text.split("\n")
+            raw_text = "\n".join(lines[1:-1]) if lines[-1] == "```" else "\n".join(lines[1:])
+
+        result = json.loads(raw_text)
+        # Ensure required fields exist
+        if "line_items" not in result:
+            result["line_items"] = []
+        if "extraction_status" not in result:
+            result["extraction_status"] = "success" if result.get("line_items") else "failed"
+        if "failure_reason" not in result:
+            result["failure_reason"] = None
+        return result
+
+    except json.JSONDecodeError as e:
+        return {
+            "line_items": [],
+            "extraction_status": "failed",
+            "failure_reason": f"Could not parse Gemini response: {str(e)}",
+        }
+    except Exception as e:
+        return {
+            "line_items": [],
+            "extraction_status": "failed",
+            "failure_reason": f"Line item extraction error: {str(e)}",
         }
 
 
@@ -171,6 +228,40 @@ def upsert_bill(filename: str, image_path: str, analysis: dict):
             analysis.get("analysis_status", "failed"),
             analysis.get("raw_analysis"),
         ))
+
+
+def upsert_line_items(filename: str, line_items_result: dict):
+    """Update a bill record with line items extraction results."""
+    line_items = line_items_result.get("line_items")
+    status = line_items_result.get("extraction_status", "failed")
+    failure_reason = line_items_result.get("failure_reason")
+
+    line_items_json = json.dumps(line_items) if line_items else None
+
+    # If failed, append failure note to existing notes
+    note_append = None
+    if status == "failed" and failure_reason:
+        note_append = f"Line items extraction failed: {failure_reason}"
+
+    with db() as conn:
+        row = conn.execute("SELECT notes FROM bills WHERE filename = ?", (filename,)).fetchone()
+        existing_notes = row["notes"] if row else None
+
+        new_notes = existing_notes
+        if note_append:
+            if new_notes:
+                new_notes = f"{new_notes}\n{note_append}"
+            else:
+                new_notes = note_append
+
+        conn.execute("""
+            UPDATE bills
+            SET line_items = ?,
+                line_items_status = ?,
+                notes = ?,
+                updated_at = datetime('now')
+            WHERE filename = ?
+        """, (line_items_json, status, new_notes, filename))
 
 
 def register_pending(filename: str, image_path: str):

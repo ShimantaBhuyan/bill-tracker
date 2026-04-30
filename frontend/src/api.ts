@@ -47,14 +47,22 @@ export const api = {
 
   getMonthly: () => request<MonthlyResponse>("/api/monthly"),
 
-  uploadReceipts: (files: FileList) => {
+  uploadReceipts: (files: FileList, extractLineItems?: boolean) => {
     const form = new FormData();
     Array.from(files).forEach((f) => form.append("files", f));
+    if (extractLineItems) {
+      form.append("extract_line_items", "true");
+    }
     return request<{ uploaded: number; files: string[] }>("/api/upload", {
       method: "POST",
       body: form,
     });
   },
+
+  extractLineItems: (id: number) =>
+    request<Bill>(`/api/bills/${id}/extract-line-items`, {
+      method: "POST",
+    }),
 
   imageUrl: (filename: string) => `${BASE}/api/images/${encodeURIComponent(filename)}`,
 };

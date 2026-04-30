@@ -8,6 +8,7 @@ import {
   Loader2,
   CheckCircle2,
   AlertCircle,
+  ListChecks,
 } from "lucide-react";
 
 const CATEGORY_LABELS: Record<string, string> = {
@@ -24,6 +25,7 @@ interface Props {
 export function StatsBar({ onUpload }: Props) {
   const [stats, setStats] = useState<Stats | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [extractLineItems, setExtractLineItems] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<{
     type: "success" | "error" | "info";
     message: string;
@@ -81,10 +83,11 @@ export function StatsBar({ onUpload }: Props) {
     setUploadStatus({ type: "info", message: "Uploading..." });
 
     try {
-      const res = await api.uploadReceipts(files);
+      const res = await api.uploadReceipts(files, extractLineItems);
+      const liMsg = extractLineItems ? " (with line items)" : "";
       setUploadStatus({
         type: "success",
-        message: `${res.uploaded} receipt(s) uploaded. Analyzing...`,
+        message: `${res.uploaded} receipt(s) uploaded${liMsg}. Analyzing...`,
       });
       loadStats();
       onUploadRef.current?.();
@@ -216,6 +219,20 @@ export function StatsBar({ onUpload }: Props) {
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
           Actions
         </p>
+
+        <label className="flex items-center gap-2 text-sm text-gray-600 mb-3 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={extractLineItems}
+            onChange={(e) => setExtractLineItems(e.target.checked)}
+            className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+          />
+          <span className="flex items-center gap-1.5">
+            <ListChecks className="w-3.5 h-3.5 text-gray-400" />
+            Extract line items
+          </span>
+        </label>
+
         <button
           onClick={handleUploadClick}
           disabled={isUploading}
