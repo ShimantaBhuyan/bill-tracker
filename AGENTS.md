@@ -28,13 +28,15 @@ pip install -r requirements.txt
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+**Gotcha:** `start.sh` only creates `.venv` and installs requirements **once**. If `requirements.txt` changes later, delete `.venv` and rerun `./start.sh`, or activate the venv and `pip install -r requirements.txt` manually.
+
 ### Environment (`backend/.env`)
 
 | Variable | Notes |
 |----------|-------|
 | `GEMINI_API_KEY` | Required for AI extraction. If missing, uploads still work but analysis is skipped. |
 | `IMAGES_DIR` | **Must be an absolute path** where receipt images are stored. The app reads from and writes to this directory. |
-| `DB_PATH` | SQLite file path (default: `./bills.db`). |
+| `DB_PATH` | SQLite file path. **Does NOT read from `.env` reliably** (see Gotchas below). Always use the default `./bills.db` or pre-export `DB_PATH` in the shell. |
 | `GEMINI_MODEL` | Default in code is `gemini-2.0-flash`; `.env.example` uses `gemini-2.5-flash`. |
 | `BATCH_SIZE` | Gemini concurrency limit for batch analyzer (default: 5). |
 
@@ -47,6 +49,7 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
   - `python analyzer.py --reanalyze` (re-process all)
   - `python analyzer.py --batch-size 10` (override concurrency)
 - Upload endpoint (`POST /api/upload`) saves images to `IMAGES_DIR` and queues background Gemini analysis via `BackgroundTasks`.
+- Optional line-items extraction: pass `extract_line_items=true` during upload, or trigger later via `POST /api/bills/{id}/extract-line-items`.
 - Valid `category` values: `food`, `fuel`, `parking`, `others`. API validates this on `PUT /api/bills/{id}`.
 - CORS allows `http://localhost:5173` and `http://localhost:3000`.
 
@@ -85,5 +88,6 @@ No test runner or test scripts in `package.json`.
 
 - `IMAGES_DIR` must be an absolute path. Relative paths will likely break file I/O.
 - If backend `.env` is missing, the app falls back to a hardcoded macOS path in `main.py` (`/Users/devkrishna/Downloads/MyBills_Apr30_2026/png_images`). Always configure `.env`.
+- **`DB_PATH` is read at module import time in `database.py`, but `main.py` and `analyzer.py` both import `database` before calling `load_dotenv()`. This means `DB_PATH` in `.env` is ignored. The database always goes to `./bills.db` unless you explicitly export `DB_PATH` in your shell before running Python.**
 - Uploads deduplicate by filename with an auto-increment suffix (`_1`, `_2`, etc.) if a file already exists in `IMAGES_DIR`.
 - Database schema is auto-created on first startup; no migrations needed.
